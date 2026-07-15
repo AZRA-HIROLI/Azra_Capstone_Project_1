@@ -1,9 +1,10 @@
 import json
 import urllib.request
-import urllib.error 
+from urllib.error import HTTPError, URLError
 import pandas as pd
+import numpy as np
 
-# Define Schemes
+# Config & Constants
 HDFC_TOP_100_CODE = "125497"
 BLUECHIP_SCHEMES = {
     "119551": "SBI Bluechip Direct Growth",
@@ -14,7 +15,7 @@ BLUECHIP_SCHEMES = {
 }
 
 def fetch_json(url):
-    """Helper function to perform GET request and return parsed JSON."""
+    """Safely fetch and parse JSON from a URL."""
     try:
         with urllib.request.urlopen(url) as response:
             if response.status == 200:
@@ -24,92 +25,132 @@ def fetch_json(url):
     return None
 
 # =====================================================================
-# TASK 1: Fetch Live NAV (HDFC Top 100 Direct) and Save as Raw CSV
+# STEP 1: Fetch Live NAV (HDFC Top 100) & Save Raw CSV
 # =====================================================================
-print("--- Task 1: Fetching HDFC Top 100 (125497) ---")
+print("\n=== STEP 1: Fetching HDFC Top 100 Direct ===")
 hdfc_url = f"https://api.mfapi.in/mf/{HDFC_TOP_100_CODE}"
-hdfc_data = fetch_json(hdfc_url)
+hdfc_payload = fetch_json(hdfc_url)
 
-if hdfc_data and "data" in hdfc_data:
-    # Extract historical NAV series
-    df_hdfc = pd.DataFrame(hdfc_data["data"])
-    df_hdfc["scheme_code"] = HDFC_TOP_100_CODE
+if hdfc_payload and "data" in hdfc_payload:
+    meta = hdfc_payload.get("meta", {})
+    raw_data = hdfc_payload["data"]
     
-    # Save raw CSV
-    hdfc_csv_path = "hdfc_125497_raw.csv"
-    df_hdfc.to_csv(hdfc_csv_path, index=False)
-    print(f"Successfully saved {len(df_hdfc)} historical records to {hdfc_csv_path}\n")
+    # Map to DataFrame and inject metadata
+    df_hdfc = pd.DataFrame(raw_data)
+    df_hdfc["scheme_code"] = meta.get("scheme_code")
+    df_hdfc["scheme_name"] = meta.get("scheme_name")
+    
+    # Save as Raw CSV
+    df_hdfc.to_csv("hdfc_125497_raw.csv", index=False)
+    print(f"✔ Saved {len(df_hdfc)} historical records to 'hdfc_125497_raw.csv'")
 else:
-    print("Failed to fetch HDFC Top 100 data.\n")
-
+    print("❌ Failed to fetch HDFC 125497.")
 
 # =====================================================================
-# TASK 2: Fetch NAV for 5 Key Bluechip Schemes & Combine into CSV
+# STEP 2: Fetch Live NAV for 5 Key Schemes & Save Combined CSV
 # =====================================================================
-print("--- Task 2: Fetching 5 Key Bluechip Schemes ---")
-combined_records = []
+print("\n=== STEP 2: Fetching 5 Key Bluechip Schemes ===")
+bluechip_list = []
 
 for code, name in BLUECHIP_SCHEMES.items():
-    print(f"Fetching NAV for {name} ({code})...")
-    scheme_url = f"https://api.mfapi.in/mf/{code}"
-    res = fetch_json(scheme_url)
-    
-    if res and "data" in res:
-        # Get latest NAV entry (first element in the array is usually the latest)
-        latest_entry = res["data"][0] 
-        combined_records.append({
-            "Scheme Code": code,
-            "Scheme Name": name,
-            "Latest Date": latest_entry.get("date"),
-            "Latest NAV": latest_entry.get("nav")
+    print(f"Fetching NAV for: {name} ({code})...")
+    payload = fetch_json(f"https://api.mfapi.in/mf/{code}")
+    if payload and "data" in payload and "meta" in payload:
+        latest = payload["data"][0]  # mfapi.in historical arrays are ordered [newest -> oldest]
+        bluechip_list.append({
+            "scheme_code": code,
+            "scheme_name": payload["meta"].get("scheme_name"),
+            "date": latest.get("date"),
+            "nav": latest.get("nav")
         })
 
-df_bluechips = pd.DataFrame(combined_records)
-bluechips_csv_path = "bluechip_latest_nav.csv"
-df_bluechips.to_csv(bluechips_csv_path, index=False)
-print(f"Saved latest Bluechip NAVs to {bluechips_csv_path}\n")
-
+df_bluechips = pd.DataFrame(bluechip_list)
+df_bluechips.to_csv("bluechip_latest_nav.csv", index=False)
+print("✔ Saved combined latest NAVs to 'bluechip_latest_nav.csv'")
 
 # =====================================================================
-# TASK 3: Explore Fund Master & AMFI Scheme Code Structure
+# STEP 3: Explore Fund Master & Analyze AMFI Scheme Code Structure
 # =====================================================================
-print("--- Task 3: Exploring Fund Master ---")
-# mfapi.in lists all schemes under GET /mf
-all_funds_url = "https://api.mfapi.in/mf"
-all_funds = fetch_json(all_funds_url)
+print("\n=== STEP 3: Exploring Fund Master Structure ===")
+master_url = "https://api.mfapi.in/mf"
+master_payload = fetch_json(master_url)
 
-if all_funds:
-    df_master = pd.DataFrame(all_funds)
-    print(f"Total schemes found in Master: {len(df_master)}")
-    print("Sample Master Data Schema:")
-    print(df_master.head(3))
-else:
-    print("Failed to fetch Fund Master list.")# -*- coding: utf-8 -*-
-"""
-Spyder Editor
-
-This is a temporary script file.
-"""
-# Assuming you have a list of code values:
-# fund_master_codes = set(df_master['schemeCode'].astype(str))
-
-def validate_data_quality(fund_master_codes, sample_size=50):
-    """
-    Validates that a sample of AMFI codes from the fund master
-    have active endpoints and returns status summaries.
-    """
-    sampled_codes = list(fund_master_codes)[:sample_size]
-    results = []
+if master_payload:
+    df_master = pd.DataFrame(master_payload)
+    print(f"Total Unique Schemes in Master List: {len(df_master):,}")
     
-    for code in sampled_codes:
-        url = f"https://api.mfapi.in/mf/{code}/latest" # Lighter request than fetching full history
-        try:
-            with urllib.request.urlopen(url) as response:
-                status = response.getcode()
-                results.append({"scheme_code": code, "status": "Valid", "http_code": status})
-        except urllib.error.HTTPError as e:
-            results.append({"scheme_code": code, "status": f"Orphaned/Missing", "http_code": e.code})
-        except Exception as e:
-            results.append({"scheme_code": code, "status": f"Connection Error", "http_code": None})
-            
-    return pd.DataFrame(results)
+    # Demystifying why metadata attributes (Risk, Categories) are missing in raw master:
+    print("\n🔍 Note on Fund Master Metadata:")
+    print("The raw `mfapi.in/mf` master list returns ONLY `schemeCode` and `schemeName`.")
+    print("Metadata (Fund House, Category, Risk Grade) must be parsed programmatically from the text patterns.")
+    
+    # Parse Fund House & Plan options from the Scheme Name pattern
+    df_master['fund_house'] = df_master['schemeName'].apply(lambda x: x.split("Mutual Fund")[0].strip() if "Mutual Fund" in x else x.split()[0])
+    df_master['is_direct'] = df_master['schemeName'].str.contains('Direct', case=False)
+    df_master['is_growth'] = df_master['schemeName'].str.contains('Growth', case=False)
+    
+    print("\n--- Structural Analysis Sample ---")
+    print(f"Unique Fund Houses Identified: {df_master['fund_house'].nunique()}")
+    print(f"Percentage of Direct Plans: {df_master['is_direct'].mean() * 100:.2f}%")
+    print(f"Percentage of Growth Schemes: {df_master['is_growth'].mean() * 100:.2f}%")
+else:
+    print("❌ Failed to pull Master registry.")
+
+# import time  # <--- Import time for introducing sleep delays
+
+# =====================================================================
+# STEP 4: Validating AMFI Codes (DQ Audit) - SAFE VERSION
+# =====================================================================
+print("\n=== STEP 4: Validating AMFI Codes (DQ Audit) ===")
+
+# Reduce sample size to 15-20 to test quickly without getting blocked
+dq_sample = df_master.sample(n=20, random_state=42) if 'df_master' in locals() else pd.DataFrame()
+validation_results = []
+
+for idx, row in dq_sample.iterrows():
+    code = str(row['schemeCode'])
+    url = f"https://api.mfapi.in/mf/{code}/latest" 
+    
+    print(f"Auditing code {code}...", end="", flush=True)
+    
+    try:
+        # Added 'timeout=3' to prevent infinite hanging if api.mfapi.in is slow
+        with urllib.request.urlopen(url, timeout=3) as response:
+            payload = json.loads(response.read().decode())
+            if payload and "data" in payload and len(payload["data"]) > 0:
+                validation_results.append({"code": code, "status": "PASS", "details": "Active & Valid"})
+                print(" [PASS]")
+            else:
+                validation_results.append({"code": code, "status": "FAIL", "details": "Null data payload"})
+                print(" [FAIL - Empty]")
+                
+    except HTTPError as e:
+         validation_results.append({"code": code, "status": "FAIL", "details": f"Orphaned Code (HTTP {e.code})"})
+         print(f" [FAIL - HTTP {e.code}]")
+    except URLError as e:
+         validation_results.append({"code": code, "status": "ERROR", "details": f"Network Error ({e.reason})"})
+         print(" [ERROR - Timeout/DNS]")
+    except Exception as e:
+         validation_results.append({"code": code, "status": "ERROR", "details": str(e)})
+         print(" [ERROR]")
+    
+    # Crucial: Sleep for 0.5 seconds to respect the API limits and prevent blocking
+    time.sleep(0.5)
+
+
+df_dq = pd.DataFrame(validation_results)
+pass_rate = (df_dq['status'] == 'PASS').mean() * 100
+
+print(f"\nAudit completed on {len(df_dq)} sampled registry items.")
+print(f"Referential Integrity Pass Rate: {pass_rate:.1f}%")
+
+
+
+from pathlib import Path
+
+# Safely establish the destination directory
+reports_dir = Path("./reports")
+reports_dir.mkdir(parents=True, exist_ok=True)
+
+# Define file destination
+pdf_path = reports_dir / "mutual_fund_dq_report.pdf"
